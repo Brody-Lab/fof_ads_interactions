@@ -1,0 +1,181 @@
+import sys
+sys.path.insert(1, '../../../figure_code/')
+from my_imports import *
+
+from tqdm import tqdm
+import random
+from helpers.phys_helpers import get_sortCells_for_rat, equalize_neurons_across_regions, datetime
+from helpers.rasters_and_psths import get_neural_activity
+from helpers.physdata_preprocessing import load_phys_data_from_Cell
+from sklearn.linear_model import LogisticRegressionCV
+from sklearn.model_selection import KFold
+from sklearn.model_selection import cross_val_predict
+
+
+def equalize_trials(df_trial, variable):
+    random.seed(10)
+    n = df_trial[variable].value_counts().min()
+    idx_R = random.sample(list(np.where(df_trial[variable] == 1)[0]), n)[:n]
+    idx_L = random.sample(list(np.where(df_trial[variable] == 0)[0]), n)[:n]
+    df_trial = df_trial.loc[np.sort(idx_R + idx_L)].reset_index(drop = True)
+    ntrials = len(df_trial)
+    print("trial_count: {}".format(ntrials))
+    
+    return df_trial
+
+
+def run_logistic_decoding(X, target, ntpts_per_trial, p):
+    
+    Y = np.repeat(target, ntpts_per_trial)
+    cv_reg = KFold(n_splits=p['nfolds'], shuffle = True)
+    mdl = LogisticRegressionCV(
+        cv = cv_reg,
+        Cs = p['Cs'],
+        max_iter = 1e8,
+        tol = 1e-4,
+        refit = True
+    )
+    cv_repeat = KFold(n_splits=p['nfolds'], shuffle = True)
+    
+    # repeat k-fold crossvalidation to get CIs
+    t0_index = np.hstack(([0], np.cumsum(ntpts_per_trial)[:-1]))
+    max_tpts = max(ntpts_per_trial)
+    accuracy_fold = np.nan * np.zeros((p['n_repeats'], max_tpts))
+    
+    cv_dict = dict()
+    
+    for it in range(p['n_repeats']):
+        
+        cv_dict[it] = dict()
+        cv_dict[it]['mdl_coefs'] = np.nan * np.zeros((p['nfolds'], np.shape(X)[0]))
+        cv_dict[it]['mdl_intercept'] = np.nan * np.zeros((p['nfolds']))
+        cv_dict[it]['test_trials'] = []
+        y_pred = np.nan * np.zeros(np.shape(Y))
+        
+        for fold, (train_index, test_index) in enumerate(cv_repeat.split(X.T)):
+            
+            mdl.fit(X.T[train_index], Y[train_index])
+            y_pred[test_index] = mdl.predict(X.T[test_index])
+            cv_dict[it]['mdl_coefs'][fold, :] = mdl.coef_
+            cv_dict[it]['mdl_intercept'][fold] = mdl.intercept_
+            cv_dict[it]['test_trials'].append(test_index)
+            
+        
+        # cv = KFold(n_splits=p['nfolds'], shuffle = True)
+        # y_pred = cross_val_predict(mdl, X.T, Y, cv = cv)
+        y_score = y_pred == Y
+        
+        # find model accuracy for each time point
+        for t in range(max_tpts):
+            tr_idx = np.squeeze(np.where(ntpts_per_trial > t))
+            if tr_idx.size > 50:
+                accuracy_fold[it,t] = np.nanmean(np.array(y_score)[t0_index[tr_idx]+t])
+                
+    accuracy_sem = np.nan*np.zeros((max_tpts,2))
+    accuracy_std = np.nan*np.zeros(max_tpts)
+    for t in range(max_tpts):
+        accuracy_sem[t,:] = [np.percentile(accuracy_fold[:,t], 2.5),
+                            np.percentile(accuracy_fold[:,t], 97.5)]
+        accuracy_std[t] = np.std(accuracy_fold[:,t])
+    
+    mdl.fit(X.T, Y)
+    results = dict()
+    results['accuracy'] = np.nanmean(accuracy_fold, axis = 0)  # accuracy(t) from cross-validation across folds
+    results['accuracy_sem'] = accuracy_sem  # sem(t) across cross-validation folds
+    results['accuracy_std'] = accuracy_std  # std of accuracy(t) across cross-validation folds
+    results['cv_summary'] = cv_dict # dict containing test indices and fits across all cross-validation folds and repeats
+    results['tpts'] = range(max_tpts)  # which tpts in a trial
+    results['mdl_coefs'] = mdl.coef_  # mdl coefs fit to whole data no cross-validation
+    results['mdl_intercept'] = mdl.intercept_  # intercept fit to whole data no cross-validation
+    
+    return results
+    
+    
+    
+        
+if __name__ == "__main__":
+    
+    p = dict()
+    p['ratnames'] = SPEC.RATS
+    p['regions'] = SPEC.REGIONS
+    p['cols'] = SPEC.COLS
+    p['fr_thresh'] = 1.0 # firing rate threshold for including neurons
+    p['stim_thresh'] = 0.0 # stimulus duration threshold for including trials
+    p['align_to'] = ['clicks_on', 'clicks_on']
+    p['align_name'] = ['clickson_masked', 'clickson_unmasked']
+    p['pre_mask'] = [None, None]
+    p['post_mask'] = ['clicks_off', None]
+    p['start_time'] = [-100, -100]
+    p['end_time'] = [1100, 1500] # in ms
+    p['binsize'] = 50 # in ms
+    p['filter_type'] = 'gaussian'
+    p['filter_w'] = 75 # in ms
+    p['Cs'] = np.logspace(-7,3,200)  # cross-validation parameter
+    p['nfolds'] = 10  # number of folds for cross-validation
+    p['n_repeats'] = 10 # number of repeats for cross-validation
+    
+    p['decode_type'] = 'history'
+    
+    if p['decode_type'] == 'choice':
+        SAVEDIR = SPEC.RESULTDIR + 'choice_decoding/'
+    elif p['decode_type'] == 'history':
+        SAVEDIR = SPEC.RESULTDIR + 'history_decoding/'
+    fname = SAVEDIR + 'params' + datetime()[5:] + ".npy"
+    np.save(fname, p)
+    
+    rat = p['ratnames'][int(sys.argv[1])]
+    
+    print("\n\n\n\n===== RAT: {} =====".format(rat))
+    files, this_datadir = get_sortCells_for_rat(rat, SPEC.DATADIR)
+    
+    file = files[int(sys.argv[2])]
+    print('\n\nProcessing file: {}'.format(file))
+
+    fname = SAVEDIR + file[:21] + '_' + p['decode_type'] + '_' + datetime()[5:] + '.npy'
+    df_trial, df_cell, _ = load_phys_data_from_Cell(this_datadir + os.sep + file)
+    df_trial = df_trial[df_trial['stim_dur_s_actual'] >= p['stim_thresh']].reset_index(drop = True)
+
+    # equalize neurons across regions
+    df_cell = df_cell[df_cell['stim_fr'] >= p['fr_thresh']].reset_index(drop = True)
+    df_cell = equalize_neurons_across_regions(df_cell, p['regions'])
+
+    if p['decode_type'] == 'choice':
+        decoded_variable = 'pokedR'
+    elif p['decode_type'] == 'history':
+        decoded_variable = 'prev_trial'
+        # keep only post correct trials
+        df_trial = df_trial[(df_trial.prev_trial == "right correct") | (df_trial.prev_trial == "left correct")].reset_index() 
+        df_trial.prev_trial = df_trial.prev_trial.map({'right correct' :1, 'left correct':0})
+    else:
+        raise Exception("unknown decoding type")
+
+    # equalize trials following left/right correct choice
+    df_trial = equalize_trials(df_trial, decoded_variable)
+    target = np.array(df_trial[decoded_variable], dtype = float)
+
+    summary = dict()
+    for align_id, (align, align_name) in enumerate(zip(p['align_to'], p['align_name'])):
+        print("\n\nProcessing alignment: {}".format(align_name))
+        align_to = p['align_to'][align_id]
+        summary[align_name] = dict()
+
+        for r, reg in enumerate(p['regions']):
+            print("\n\tProcessing region: {}".format(reg))
+            X, ntpts_per_trial = get_neural_activity(df_cell, df_trial, reg, p, align_id)
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                summary[align_name][reg] = run_logistic_decoding(
+                    X,
+                    target,
+                    ntpts_per_trial,
+                    p)
+
+        summary['prm'] = dict()
+        summary['prm']['filename'] = file
+        summary['prm']['ntrials'] = len(df_trial)
+        summary['prm']['n_neurons'] = [df_cell['region'].value_counts()['ADS'], df_cell['region'].value_counts()['FOF']]
+        np.save(fname, summary)
+
+
+
