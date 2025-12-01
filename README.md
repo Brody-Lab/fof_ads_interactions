@@ -1,6 +1,6 @@
 # A multi-region recurrent circuit for evidence accumulation in rats
 
-Code repository for Neuron manuscript.
+Authors: Diksha Gupta, Charles Kopec, Adrian Bondy, Thomas Luo, Verity Elliott, Carlos Brody
 
 ## Overview
 
@@ -30,12 +30,6 @@ This repository contains analysis code for investigating neural population dynam
 - **Scripts**: `figure1_popraster.py`, `figure1_trialraster.py`
 - **Outputs**: Population PSTHs, single-trial rasters
 
-```bash
-cd Code/figure_code/figure1/
-python figure1_popraster.py
-python figure1_trialraster.py
-```
-
 ### Figure 2: Neural Encoding and Decoding
 - **Scripts**: `figure2_encodingfigs.py`, `figure2_decodingfigs.py`, `figure2/fig2_helpers/`
 - **Analyses**:
@@ -44,11 +38,6 @@ python figure1_trialraster.py
   - Reduced-rank GLM for inter-region communication (`neural_GLM/glmfits_rr.py`)
   - Cross-correlation of decision variables (`DVcc_sims.py`)
 
-```bash
-cd Code/figure_code/figure2/
-python figure2_encodingfigs.py
-python figure2_decodingfigs.py
-```
 
 ### Figure 3: Optogenetic Perturbations
 - **Script**: `figure3/figure1_metaopto.m` (MATLAB)
